@@ -1,0 +1,283 @@
+
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Dashboard de Análise de Vendas - Relatório Executivo</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 24px; background: #0b0f14; color: #e6edf3; }
+    h1 { margin-bottom: 8px; }
+    .card { background:#11161d; padding:16px; border-radius:12px; box-shadow: 0 4px 16px rgba(0,0,0,0.3); margin-bottom:16px; }
+    .row { display:flex; gap:12px; flex-wrap: wrap; }
+    label { display:block; margin-bottom:6px; color:#a9b6c3; font-size:14px; }
+    select, input[type="file"] { width:100%; padding:10px; border-radius:10px; border:1px solid #2a3340; background:#0b0f14; color:#e6edf3; }
+    .kpi { flex: 1 1 220px; text-align:center; }
+    .kpi .val { font-size: 24px; font-weight: 700; }
+    .kpi .lbl { color:#96a7bd; font-size:12px; }
+    canvas { background:transparent; }
+    table { width:100%; border-collapse: collapse; margin-top: 10px; }
+    th, td { border-bottom: 1px solid #263041; padding: 8px; text-align: left; font-size: 14px; }
+    th { color:#96a7bd; }
+    .muted { color:#96a7bd; font-size:13px; }
+  </style>
+  <script src="https://unpkg.com/xlsx/dist/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+  <h1>Dashboard de Análise de Vendas - Relatório Executivo</h1>
+  <p class="muted">Layout preservado: Filtros • Vendas por Tipo • Vendas por Vendedor • Top 3 Vendedores • Principais Clientes • Resumo Executivo</p>
+
+  <div class="card">
+    <div class="row">
+      <div style="flex:2 1 320px">
+        <label>Anexar Excel (.xlsx)</label>
+        <input type="file" id="file" accept=".xlsx" />
+      </div>
+      <div style="flex:1 1 160px">
+        <label>Ano</label>
+        <select id="year"></select>
+      </div>
+      <div style="flex:1 1 160px">
+        <label>Mês</label>
+        <select id="month"></select>
+      </div>
+      <div style="flex:2 1 260px">
+        <label>Vendedor</label>
+        <select id="seller" multiple size="4"></select>
+      </div>
+      <div style="flex:2 1 260px">
+        <label>Tipo</label>
+        <select id="tipo" multiple size="4"></select>
+      </div>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="card kpi"><div class="lbl">Faturamento</div><div id="kpi-total" class="val">R$ 0,00</div></div>
+    <div class="card kpi"><div class="lbl">Nº de Vendas</div><div id="kpi-count" class="val">0</div></div>
+    <div class="card kpi"><div class="lbl">Ticket Médio</div><div id="kpi-ticket" class="val">R$ 0,00</div></div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0">Vendas por Tipo</h3>
+    <canvas id="chartTipo" height="160"></canvas>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0">Vendas por Vendedor</h3>
+    <canvas id="chartVend" height="200"></canvas>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0">Top 3 Vendedores</h3>
+    <table id="top3">
+      <thead><tr><th>Vendedor</th><th>Faturamento</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0">Principais Clientes</h3>
+    <canvas id="chartClientes" height="200"></canvas>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0">Vendas (Detalhe)</h3>
+    <div style="overflow:auto; max-height:60vh;">
+      <table id="table">
+        <thead><tr></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+<script>
+const monthNames = {1:"Janeiro",2:"Fevereiro",3:"Março",4:"Abril",5:"Maio",6:"Junho",7:"Julho",8:"Agosto",9:"Setembro",10:"Outubro",11:"Novembro",12:"Dezembro"};
+const fmtBRL = (n) => new Intl.NumberFormat("pt-BR",{style:"currency", currency:"BRL"}).format(n||0);
+let DATA = [], FILTERED = [];
+let chartTipo, chartVend, chartClientes;
+
+const normalizeSeller = (s) => (s||"").toString().trim().toUpperCase();
+
+function parseExcel(file){
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const arr = new Uint8Array(e.target.result);
+    const wb = XLSX.read(arr, {type:"array", cellDates:true, dateNF:"yyyy-mm-dd"});
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    let rows = XLSX.utils.sheet_to_json(ws, {defval:null});
+
+    rows = rows.map(row => {
+      let d = row["DATA"];
+      if (d && Object.prototype.toString.call(d) === "[object Date]") {
+      } else if (typeof d === "number") {
+        const dc = XLSX.SSF.parse_date_code(d);
+        d = dc ? new Date(Date.UTC(dc.y, dc.m-1, dc.d)) : null;
+      } else if (typeof d === "string") {
+        const dd = new Date(d);
+        d = isNaN(dd.getTime()) ? null : dd;
+      } else { d = null; }
+
+      let v = row["VALOR"];
+      if (typeof v === "string") { v = parseFloat(v.replace(/\./g,"").replace(",", ".")); }
+      else if (typeof v !== "number") { v = parseFloat(v) || 0; }
+
+      const vendedor = (row["VENDEDOR"] ?? "").toString().trim();
+      return {
+        "DATA": d,
+        "ANO": row["ANO"] ?? (d ? d.getFullYear() : null),
+        "MES_NUM": d ? d.getMonth()+1 : null,
+        "TIPO": (row["TIPO"] ?? "").toString().trim(),
+        "VENDEDOR": vendedor,
+        "VENDEDOR_NORM": normalizeSeller(vendedor),
+        "N° DA VENDA": row["N° DA VENDA"] ?? row["N DA VENDA"] ?? row["Nº DA VENDA"] ?? row["Nº"] ?? null,
+        "CLIENTE": row["CLIENTE"] ?? "",
+        "VALOR": isNaN(v) ? 0 : v
+      };
+    }).filter(r => r.DATA && !isNaN(r.DATA));
+
+    DATA = rows;
+    buildSelectors();
+    applyFilter();
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function buildSelectors(){
+  const years = Array.from(new Set(DATA.map(r => r.ANO).filter(Boolean))).sort((a,b)=>a-b);
+  const months = Array.from(new Set(DATA.map(r => r.MES_NUM).filter(Boolean))).sort((a,b)=>a-b);
+  const sellers = Array.from(new Set(DATA.map(r => r.VENDEDOR).filter(Boolean))).sort((a,b)=>a.localeCompare(b,'pt'));
+  const tipos = Array.from(new Set(DATA.map(r => r.TIPO))).sort((a,b)=>a.localeCompare(b,'pt'));
+
+  const yearSel = document.getElementById("year");
+  yearSel.innerHTML = years.map(y => `<option value="${y}">${y}</option>`).join("");
+  if (years.length) yearSel.value = years[years.length-1];
+
+  const monthSel = document.getElementById("month");
+  monthSel.innerHTML = months.map(m => `<option value="${m}">${monthNames[m]||m}</option>`).join("");
+  if (months.length) monthSel.value = months[months.length-1];
+
+  const sellerSel = document.getElementById("seller");
+  sellerSel.innerHTML = sellers.map(s => `<option value="${s}">${s}</option>`).join("");
+
+  const tipoSel = document.getElementById("tipo");
+  tipoSel.innerHTML = tipos.map(t => `<option value="${t||"(vazio)"}">${t||"(vazio)"}</option>`).join("");
+}
+
+function getMulti(sel){ return Array.from(sel.selectedOptions).map(o => o.value); }
+
+function applyFilter(){
+  const y = parseInt(document.getElementById("year").value);
+  const m = parseInt(document.getElementById("month").value);
+  const sellers = getMulti(document.getElementById("seller"));
+  const tipos = getMulti(document.getElementById("tipo"));
+
+  const sellersNorm = sellers.map(s => s.toUpperCase().trim());
+  FILTERED = DATA.filter(r => {
+    const byY = !y || r.ANO === y;
+    const byM = !m || r.MES_NUM === m;
+    const byS = sellersNorm.length ? sellersNorm.includes(r.VENDEDOR_NORM) : true;
+    const byT = tipos.length ? tipos.includes(r.TIPO) : true;
+    return byY && byM && byS && byT;
+  });
+
+  renderKPIs();
+  renderCharts();
+  renderTop3();
+  renderTable();
+}
+
+function renderKPIs(){
+  const total = FILTERED.reduce((acc,r)=>acc+(r.VALOR||0),0);
+  const count = FILTERED.length;
+  const ticket = count ? total / count : 0;
+  document.getElementById("kpi-total").textContent = fmtBRL(total);
+  document.getElementById("kpi-count").textContent = count.toString();
+  document.getElementById("kpi-ticket").textContent = fmtBRL(ticket);
+}
+
+function renderCharts(){
+  // por tipo
+  const byTipo = {};
+  FILTERED.forEach(r => { byTipo[r.TIPO] = (byTipo[r.TIPO]||0) + (r.VALOR||0); });
+  const labelsT = Object.keys(byTipo);
+  const dataT = labelsT.map(k => byTipo[k]);
+
+  if (chartTipo) chartTipo.destroy();
+  chartTipo = new Chart(document.getElementById("chartTipo").getContext("2d"), {
+    type: "bar",
+    data: { labels: labelsT, datasets: [{ label: "Faturamento", data: dataT }] },
+    options: { responsive: true, maintainAspectRatio: false }
+  });
+
+  // por vendedor
+  const byVend = {};
+  FILTERED.forEach(r => { byVend[r.VENDEDOR] = (byVend[r.VENDEDOR]||0) + (r.VALOR||0); });
+  const labelsV = Object.keys(byVend);
+  const dataV = labelsV.map(k => byVend[k]);
+
+  if (chartVend) chartVend.destroy();
+  chartVend = new Chart(document.getElementById("chartVend").getContext("2d"), {
+    type: "bar",
+    data: { labels: labelsV, datasets: [{ label: "Faturamento", data: dataV }] },
+    options: { responsive: true, maintainAspectRatio: false }
+  });
+
+  // principais clientes (top 10)
+  const byCli = {};
+  FILTERED.forEach(r => { byCli[r.CLIENTE] = (byCli[r.CLIENTE]||0) + (r.VALOR||0); });
+  const sortedCli = Object.entries(byCli).sort((a,b)=>b[1]-a[1]).slice(0,10);
+  const labelsC = sortedCli.map(x=>x[0]);
+  const dataC = sortedCli.map(x=>x[1]);
+
+  if (chartClientes) chartClientes.destroy();
+  chartClientes = new Chart(document.getElementById("chartClientes").getContext("2d"), {
+    type: "bar",
+    data: { labels: labelsC, datasets: [{ label: "Faturamento", data: dataC }] },
+    options: { responsive: true, maintainAspectRatio: false }
+  });
+}
+
+function renderTop3(){
+  const byVend = {};
+  FILTERED.forEach(r => { byVend[r.VENDEDOR] = (byVend[r.VENDEDOR]||0) + (r.VALOR||0); });
+  const top3 = Object.entries(byVend).sort((a,b)=>b[1]-a[1]).slice(0,3);
+  const tbody = document.querySelector("#top3 tbody");
+  tbody.innerHTML = top3.map(([vend, val]) => `<tr><td>${vend}</td><td>${fmtBRL(val)}</td></tr>`).join("");
+}
+
+function renderTable(){
+  const thead = document.querySelector("#table thead tr");
+  const tbody = document.querySelector("#table tbody");
+  thead.innerHTML = "";
+  tbody.innerHTML = "";
+
+  if (!FILTERED.length) return;
+
+  const cols = ["DATA","ANO","TIPO","VENDEDOR","N° DA VENDA","CLIENTE","VALOR"];
+  thead.innerHTML = cols.map(c=>`<th>${c}</th>`).join("");
+
+  FILTERED.sort((a,b)=>a.DATA-b.DATA).forEach(r => {
+    const tr = document.createElement("tr");
+    const d = r.DATA ? new Date(r.DATA).toISOString().slice(0,10) : "";
+    const vals = [d, r.ANO, r.TIPO, r.VENDEDOR, r["N° DA VENDA"] ?? "", r.CLIENTE, fmtBRL(r.VALOR)];
+    vals.forEach(v => {
+      const td = document.createElement("td");
+      td.textContent = v==null? "": v;
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+}
+
+document.getElementById("file").addEventListener("change", (e)=>{
+  const f = e.target.files[0]; if (f) parseExcel(f);
+});
+document.getElementById("year").addEventListener("change", applyFilter);
+document.getElementById("month").addEventListener("change", applyFilter);
+document.getElementById("seller").addEventListener("change", applyFilter);
+document.getElementById("tipo").addEventListener("change", applyFilter);
+</script>
+</body>
+</html>
